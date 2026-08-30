@@ -257,6 +257,180 @@ def finish_campaign(campaign: dict) -> None:
 
     save_campaign(campaign)
 
+def get_incomplete_campaigns() -> list[dict]:
+    """Find campaigns that still have pending recipients."""
+
+    if not os.path.exists(LOGS_DIR):
+        return []
+
+    campaigns = []
+
+    for filename in os.listdir(LOGS_DIR):
+
+        if not filename.startswith("campaign_"):
+            continue
+
+        if not filename.endswith(".json"):
+            continue
+
+        path = os.path.join(
+            LOGS_DIR,
+            filename,
+        )
+
+        try:
+
+            with open(
+                path,
+                "r",
+                encoding="utf-8",
+            ) as f:
+
+                campaign = json.load(f)
+
+            update_summary(campaign)
+
+            if campaign["summary"]["pending"] > 0:
+                campaigns.append(campaign)
+
+        except Exception as e:
+
+            print(
+                f"Warning: Could not read "
+                f"{filename}: {e}"
+            )
+
+    campaigns.sort(
+        key=lambda campaign: campaign["created_at"],
+        reverse=True,
+    )
+
+    return campaigns
+
+
+def show_campaign_summary(
+    campaign: dict,
+) -> None:
+    """Display a campaign's current progress."""
+
+    summary = campaign["summary"]
+
+    print(
+        "\n==================================="
+    )
+
+    print(
+        "       PREVIOUS CAMPAIGN FOUND"
+    )
+
+    print(
+        "===================================\n"
+    )
+
+    print(
+        f"Campaign: {campaign['campaign_id']}"
+    )
+
+    print(
+        f"Created:  {campaign['created_at']}"
+    )
+
+    print()
+
+    print(
+        f"Total:    {campaign['total_contacts']}"
+    )
+
+    print(
+        f"Sent:     {summary['sent']}"
+    )
+
+    print(
+        f"Failed:   {summary['failed']}"
+    )
+
+    print(
+        f"Pending:  {summary['pending']}"
+    )
+
+    print(
+        "\nImage:"
+    )
+
+    print(
+        campaign["image"]
+    )
+
+    print(
+        "\nCaption:"
+    )
+
+    print(
+        "-----------------------------------"
+    )
+
+    print(
+        campaign["message"]
+    )
+
+    print(
+        "-----------------------------------"
+    )
+
+
+def choose_existing_campaign() -> dict | None:
+    """
+    Ask the user whether to resume an incomplete campaign.
+
+    Returns:
+        Campaign dictionary if resuming.
+        None if starting a new campaign.
+    """
+
+    campaigns = get_incomplete_campaigns()
+
+    if not campaigns:
+        return None
+
+    # For now, use the newest incomplete campaign.
+    campaign = campaigns[0]
+
+    show_campaign_summary(
+        campaign
+    )
+
+    print(
+        "\nOptions:"
+    )
+
+    print(
+        "  [R] Resume this campaign"
+    )
+
+    print(
+        "  [N] Start a new campaign"
+    )
+
+    print()
+
+    choice = input(
+        "Choose R or N: "
+    ).strip().upper()
+
+    if choice == "R":
+
+        print(
+            "\nResuming campaign "
+            f"{campaign['campaign_id']}..."
+        )
+
+        return campaign
+
+    print(
+        "\nStarting a new campaign..."
+    )
+
+    return None
 
 # ============================================================
 # WHATSAPP SENDER
@@ -712,7 +886,90 @@ def run_broadcast() -> None:
     )
 
     # --------------------------------------------------------
-    # Load contacts
+    # Check for an incomplete campaign
+    # --------------------------------------------------------
+
+    existing_campaign = choose_existing_campaign()
+
+    if existing_campaign is not None:
+
+        campaign = existing_campaign
+
+        print(
+            "\nResuming existing campaign."
+        )
+
+        print(
+            f"Campaign ID: "
+            f"{campaign['campaign_id']}"
+        )
+
+        print(
+            f"Remaining recipients: "
+            f"{campaign['summary']['pending']}"
+        )
+
+        print(
+            "\nBroadcast resuming..."
+        )
+
+        print(
+            "Keep WhatsApp Web/browser visible.\n"
+        )
+
+        campaign = broadcast_message(
+            campaign
+        )
+
+        summary = campaign[
+            "summary"
+        ]
+
+        print(
+            "\n==================================="
+        )
+
+        print(
+            "       CAMPAIGN RESUME COMPLETE"
+        )
+
+        print(
+            "==================================="
+        )
+
+        print(
+            f"Total:     "
+            f"{campaign['total_contacts']}"
+        )
+
+        print(
+            f"Sent:      "
+            f"{summary['sent']}"
+        )
+
+        print(
+            f"Failed:    "
+            f"{summary['failed']}"
+        )
+
+        print(
+            f"Pending:   "
+            f"{summary['pending']}"
+        )
+
+        print(
+            "==================================="
+        )
+
+        print(
+            f"\nLog: "
+            f"{get_campaign_path(campaign)}"
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # New campaign
     # --------------------------------------------------------
 
     try:
@@ -863,11 +1120,13 @@ def run_broadcast() -> None:
     )
 
     print(
-        f"  ID: {campaign['campaign_id']}"
+        f"  ID: "
+        f"{campaign['campaign_id']}"
     )
 
     print(
-        f"  Log: {get_campaign_path(campaign)}"
+        f"  Log: "
+        f"{get_campaign_path(campaign)}"
     )
 
     print(
@@ -907,19 +1166,23 @@ def run_broadcast() -> None:
     )
 
     print(
-        f"Total:     {campaign['total_contacts']}"
+        f"Total:     "
+        f"{campaign['total_contacts']}"
     )
 
     print(
-        f"Sent:      {summary['sent']}"
+        f"Sent:      "
+        f"{summary['sent']}"
     )
 
     print(
-        f"Failed:    {summary['failed']}"
+        f"Failed:    "
+        f"{summary['failed']}"
     )
 
     print(
-        f"Pending:   {summary['pending']}"
+        f"Pending:   "
+        f"{summary['pending']}"
     )
 
     print(
@@ -935,7 +1198,6 @@ def run_broadcast() -> None:
     )
 
     print()
-
 
 # ============================================================
 # ENTRY POINT
