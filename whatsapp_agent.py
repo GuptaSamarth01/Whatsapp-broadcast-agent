@@ -257,6 +257,31 @@ def finish_campaign(campaign: dict) -> None:
 
     save_campaign(campaign)
 
+def interrupt_campaign(campaign: dict) -> None:
+    """Mark a campaign as interrupted and save its current state."""
+
+    update_summary(campaign)
+
+    campaign["status"] = "interrupted"
+
+    save_campaign(campaign)
+
+    summary = campaign["summary"]
+
+    print("\n")
+    print("===================================")
+    print("       BROADCAST INTERRUPTED")
+    print("===================================")
+    print(f"Campaign:  {campaign['campaign_id']}")
+    print()
+    print(f"Sent:      {summary['sent']}")
+    print(f"Failed:    {summary['failed']}")
+    print(f"Pending:   {summary['pending']}")
+    print()
+    print("Progress has been saved.")
+    print("You can resume this campaign later.")
+    print("===================================\n")
+
 def get_incomplete_campaigns() -> list[dict]:
     """Find campaigns that still have pending recipients."""
 
@@ -666,199 +691,209 @@ def broadcast_message(
         campaign["contacts"].keys()
     )
 
-    with sync_playwright() as p:
+    try:
 
-        print(
-            "\nStarting WhatsApp browser..."
-        )
+        with sync_playwright() as p:
 
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR,
-            headless=False,
-            slow_mo=100,
-        )
+            print(
+                "\nStarting WhatsApp browser..."
+            )
 
-        page = (
-            context.pages[0]
-            if context.pages
-            else context.new_page()
-        )
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=PROFILE_DIR,
+                headless=False,
+                slow_mo=100,
+            )
 
-        print(
-            "WhatsApp browser ready."
-        )
+            page = (
+                context.pages[0]
+                if context.pages
+                else context.new_page()
+            )
 
-        # ----------------------------------------------------
-        # Process contacts
-        # ----------------------------------------------------
+            print(
+                "WhatsApp browser ready."
+            )
 
-        for i, phone in enumerate(
-            contacts,
-            start=1,
-        ):
+            # ------------------------------------------------
+            # Process contacts
+            # ------------------------------------------------
 
-            recipient = campaign[
-                "contacts"
-            ][phone]
-
-            # -----------------------------------------------
-            # Skip recipients already sent
-            # -----------------------------------------------
-
-            if recipient["status"] == "sent":
-
-                print(
-                    f"\n[{i}/{len(contacts)}] "
-                    f"{phone} → already sent, skipping."
-                )
-
-                continue
-
-            # -----------------------------------------------
-            # Retry loop
-            # -----------------------------------------------
-
-            success = False
-
-            for attempt in range(
-                recipient["attempts"] + 1,
-                MAX_RETRIES + 1,
+            for i, phone in enumerate(
+                contacts,
+                start=1,
             ):
 
-                print(
-                    f"\n[{i}/{len(contacts)}] "
-                    f"Sending to {phone}..."
-                )
+                recipient = campaign[
+                    "contacts"
+                ][phone]
 
-                print(
-                    f"    Attempt "
-                    f"{attempt}/{MAX_RETRIES}"
-                )
+                # --------------------------------------------
+                # Skip recipients already sent
+                # --------------------------------------------
 
-                # -------------------------------------------
-                # Record attempt BEFORE sending
-                # -------------------------------------------
+                if recipient["status"] == "sent":
 
-                recipient["attempts"] = attempt
-                recipient["last_attempt"] = timestamp()
-                recipient["error"] = None
-
-                save_campaign(
-                    campaign
-                )
-
-                try:
-
-                    send_whatsapp_message(
-                        page=page,
-                        phone=phone,
-                        message=message,
-                        image_path=image_path,
+                    print(
+                        f"\n[{i}/{len(contacts)}] "
+                        f"{phone} → already sent, skipping."
                     )
 
-                    # ---------------------------------------
-                    # SUCCESS
-                    # ---------------------------------------
+                    continue
 
-                    update_recipient(
-                        campaign=campaign,
-                        phone=phone,
-                        status="sent",
+                # --------------------------------------------
+                # Retry loop
+                # --------------------------------------------
+
+                success = False
+
+                for attempt in range(
+                    recipient["attempts"] + 1,
+                    MAX_RETRIES + 1,
+                ):
+
+                    print(
+                        f"\n[{i}/{len(contacts)}] "
+                        f"Sending to {phone}..."
                     )
 
                     print(
-                        f"    ✓ Sent successfully "
-                        f"on attempt {attempt}."
+                        f"    Attempt "
+                        f"{attempt}/{MAX_RETRIES}"
                     )
 
-                    success = True
+                    # ----------------------------------------
+                    # Record attempt BEFORE sending
+                    # ----------------------------------------
 
-                    break
+                    recipient["attempts"] = attempt
+                    recipient["last_attempt"] = timestamp()
+                    recipient["error"] = None
 
-                except Exception as e:
-
-                    error_message = str(e)
-
-                    print(
-                        f"    ✗ Attempt "
-                        f"{attempt} failed."
+                    save_campaign(
+                        campaign
                     )
 
-                    print(
-                        f"      Error: "
-                        f"{error_message}"
-                    )
+                    try:
 
-                    recipient["error"] = (
-                        error_message
-                    )
-
-                    # ---------------------------------------
-                    # More attempts available
-                    # ---------------------------------------
-
-                    if attempt < MAX_RETRIES:
-
-                        print(
-                            f"    Retrying in "
-                            f"{RETRY_DELAY_SECONDS} "
-                            f"seconds..."
+                        send_whatsapp_message(
+                            page=page,
+                            phone=phone,
+                            message=message,
+                            image_path=image_path,
                         )
+
+                        # ------------------------------------
+                        # SUCCESS
+                        # ------------------------------------
 
                         update_recipient(
                             campaign=campaign,
                             phone=phone,
-                            status="pending",
-                            error=error_message,
+                            status="sent",
+                        )
+
+                        print(
+                            f"    ✓ Sent successfully "
+                            f"on attempt {attempt}."
+                        )
+
+                        success = True
+
+                        break
+
+                    except Exception as e:
+
+                        error_message = str(e)
+
+                        print(
+                            f"    ✗ Attempt "
+                            f"{attempt} failed."
+                        )
+
+                        print(
+                            f"      Error: "
+                            f"{error_message}"
+                        )
+
+                        recipient["error"] = (
+                            error_message
+                        )
+
+                        # ------------------------------------
+                        # More attempts available
+                        # ------------------------------------
+
+                        if attempt < MAX_RETRIES:
+
+                            print(
+                                f"    Retrying in "
+                                f"{RETRY_DELAY_SECONDS} "
+                                f"seconds..."
+                            )
+
+                            update_recipient(
+                                campaign=campaign,
+                                phone=phone,
+                                status="pending",
+                                error=error_message,
+                            )
+
+                            time.sleep(
+                                RETRY_DELAY_SECONDS
+                            )
+
+                        # ------------------------------------
+                        # No attempts remaining
+                        # ------------------------------------
+
+                        else:
+
+                            update_recipient(
+                                campaign=campaign,
+                                phone=phone,
+                                status="failed",
+                                error=error_message,
+                            )
+
+                            print(
+                                f"    ✗ Permanently failed "
+                                f"after {MAX_RETRIES} attempts."
+                            )
+
+                # ------------------------------------------------
+                # Normal delay before next recipient
+                # ------------------------------------------------
+
+                if i < len(contacts):
+
+                    if success:
+
+                        print(
+                            f"    Waiting "
+                            f"{DELAY_BETWEEN_SENDS} "
+                            f"seconds before next recipient..."
                         )
 
                         time.sleep(
-                            RETRY_DELAY_SECONDS
+                            DELAY_BETWEEN_SENDS
                         )
-
-                    # ---------------------------------------
-                    # No attempts remaining
-                    # ---------------------------------------
 
                     else:
 
-                        update_recipient(
-                            campaign=campaign,
-                            phone=phone,
-                            status="failed",
-                            error=error_message,
-                        )
-
                         print(
-                            f"    ✗ Permanently failed "
-                            f"after {MAX_RETRIES} attempts."
+                            "    Moving to next recipient."
                         )
 
-            # ------------------------------------------------
-            # Normal delay before next recipient
-            # ------------------------------------------------
+            context.close()
 
-            if i < len(contacts):
+    except KeyboardInterrupt:
 
-                if success:
+        interrupt_campaign(
+            campaign
+        )
 
-                    print(
-                        f"    Waiting "
-                        f"{DELAY_BETWEEN_SENDS} "
-                        f"seconds before next recipient..."
-                    )
-
-                    time.sleep(
-                        DELAY_BETWEEN_SENDS
-                    )
-
-                else:
-
-                    print(
-                        "    Moving to next recipient."
-                    )
-
-        context.close()
+        return campaign
 
     finish_campaign(
         campaign
