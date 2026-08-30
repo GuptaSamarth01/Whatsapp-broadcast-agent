@@ -3,12 +3,20 @@ WhatsApp Broadcast Agent
 ------------------------
 Sends the same image + caption to every phone number
 in contacts.json using WhatsApp Web + Playwright.
+
+Features:
+- Campaign logging
+- Per-recipient status
+- Attempt tracking
+- Error tracking
+- Persistent campaign state
 """
 
 import json
 import os
 import re
 import time
+from datetime import datetime
 
 from playwright.sync_api import sync_playwright
 
@@ -18,8 +26,8 @@ from playwright.sync_api import sync_playwright
 # ============================================================
 
 CONTACTS_PATH = "contacts.json"
-
 PROFILE_DIR = "./whatsapp_profile"
+LOGS_DIR = "./logs"
 
 DELAY_BETWEEN_SENDS = 25
 
@@ -98,6 +106,157 @@ def load_contacts(path: str = CONTACTS_PATH) -> list[str]:
 
 
 # ============================================================
+# TIME / LOGGING FUNCTIONS
+# ============================================================
+
+def timestamp() -> str:
+    """Return current local time in ISO format."""
+
+    return datetime.now().astimezone().isoformat(
+        timespec="seconds"
+    )
+
+
+def create_campaign(
+    image_path: str,
+    message: str,
+    contacts: list[str],
+) -> dict:
+    """Create a new campaign state."""
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+    campaign_id = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    campaign = {
+        "campaign_id": campaign_id,
+        "status": "running",
+        "created_at": timestamp(),
+        "completed_at": None,
+
+        "image": os.path.abspath(image_path),
+        "message": message,
+
+        "total_contacts": len(contacts),
+
+        "summary": {
+            "pending": len(contacts),
+            "sent": 0,
+            "failed": 0,
+        },
+
+        "contacts": {
+            phone: {
+                "status": "pending",
+                "attempts": 0,
+                "last_attempt": None,
+                "error": None,
+            }
+            for phone in contacts
+        },
+    }
+
+    save_campaign(campaign)
+
+    return campaign
+
+
+def get_campaign_path(campaign: dict) -> str:
+    """Return the log path for a campaign."""
+
+    campaign_id = campaign["campaign_id"]
+
+    return os.path.join(
+        LOGS_DIR,
+        f"campaign_{campaign_id}.json",
+    )
+
+
+def save_campaign(campaign: dict) -> None:
+    """
+    Save campaign state safely.
+
+    Writes to a temporary file first and then replaces
+    the actual campaign file.
+    """
+
+    os.makedirs(LOGS_DIR, exist_ok=True)
+
+    path = get_campaign_path(campaign)
+    temp_path = path + ".tmp"
+
+    with open(
+        temp_path,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        json.dump(
+            campaign,
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(
+        temp_path,
+        path,
+    )
+
+
+def update_summary(campaign: dict) -> None:
+    """Recalculate campaign summary from recipient states."""
+
+    statuses = [
+        data["status"]
+        for data in campaign["contacts"].values()
+    ]
+
+    campaign["summary"] = {
+        "pending": statuses.count("pending"),
+        "sent": statuses.count("sent"),
+        "failed": statuses.count("failed"),
+    }
+
+
+def update_recipient(
+    campaign: dict,
+    phone: str,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Update one recipient's campaign state."""
+
+    recipient = campaign["contacts"][phone]
+
+    recipient["status"] = status
+    recipient["last_attempt"] = timestamp()
+    recipient["error"] = error
+
+    update_summary(campaign)
+
+    save_campaign(campaign)
+
+
+def finish_campaign(campaign: dict) -> None:
+    """Mark campaign as completed."""
+
+    update_summary(campaign)
+
+    if campaign["summary"]["pending"] == 0:
+
+        campaign["status"] = "completed"
+        campaign["completed_at"] = timestamp()
+
+    save_campaign(campaign)
+
+
+# ============================================================
 # WHATSAPP SENDER
 # ============================================================
 
@@ -110,25 +269,16 @@ def send_whatsapp_message(
     """
     Send one image + caption through WhatsApp Web.
 
-    Workflow:
-
-    Open chat
-        ↓
-    Attach
-        ↓
-    Photos & videos
-        ↓
-    Select image
-        ↓
-    Enter caption
-        ↓
-    Send
+    This is the same working Playwright workflow
+    we tested successfully.
     """
 
-    print(f"    Opening chat for {phone}...")
+    print(
+        f"    Opening chat for {phone}..."
+    )
 
     # --------------------------------------------------------
-    # Open the WhatsApp chat
+    # Open chat
     # --------------------------------------------------------
 
     page.goto(
@@ -136,10 +286,11 @@ def send_whatsapp_message(
         wait_until="domcontentloaded",
     )
 
-    # Wait for the chat composer
     page.locator(
         '[contenteditable="true"][role="textbox"]'
-    ).last.wait_for(timeout=30000)
+    ).last.wait_for(
+        timeout=30000
+    )
 
     print("    Chat loaded.")
 
@@ -147,28 +298,33 @@ def send_whatsapp_message(
     # STEP 1: Open Attach menu
     # --------------------------------------------------------
 
-    print("    Opening attachment menu...")
+    print(
+        "    Opening attachment menu..."
+    )
 
     attach = page.locator(
         'button[aria-label="Attach"]'
     )
 
-    attach.wait_for(timeout=10000)
+    attach.wait_for(
+        timeout=10000
+    )
 
     attach.click()
 
     # --------------------------------------------------------
-    # STEP 2: Select Photos & videos
+    # STEP 2: Photos & videos
     # --------------------------------------------------------
 
-    print("    Selecting Photos & videos...")
+    print(
+        "    Selecting Photos & videos..."
+    )
 
     photos_videos_selector = (
         'button[role="menuitem"]'
         '[aria-label="Photos & videos"]'
     )
 
-    # Wait until WhatsApp creates the menu item
     page.locator(
         photos_videos_selector
     ).wait_for(
@@ -176,8 +332,8 @@ def send_whatsapp_message(
         timeout=10000,
     )
 
-    # WhatsApp can replace the menu element while rendering.
-    # JavaScript click avoids Playwright's detached-DOM issue.
+    # WhatsApp can replace the menu element while
+    # rendering, so use JavaScript click.
     with page.expect_file_chooser(
         timeout=10000
     ) as chooser_info:
@@ -190,23 +346,33 @@ def send_whatsapp_message(
 
     chooser = chooser_info.value
 
-    print("    File chooser detected.")
+    print(
+        "    File chooser detected."
+    )
 
     # --------------------------------------------------------
     # STEP 3: Select image
     # --------------------------------------------------------
 
-    print("    Selecting image...")
+    print(
+        "    Selecting image..."
+    )
 
-    chooser.set_files(image_path)
+    chooser.set_files(
+        image_path
+    )
 
-    print("    Image selected.")
+    print(
+        "    Image selected."
+    )
 
     # --------------------------------------------------------
     # STEP 4: Wait for image editor
     # --------------------------------------------------------
 
-    print("    Waiting for image editor...")
+    print(
+        "    Waiting for image editor..."
+    )
 
     send_media = page.get_by_role(
         "button",
@@ -219,13 +385,17 @@ def send_whatsapp_message(
         timeout=15000,
     )
 
-    print("    Image editor opened.")
+    print(
+        "    Image editor opened."
+    )
 
     # --------------------------------------------------------
-    # STEP 5: Find caption field
+    # STEP 5: Caption
     # --------------------------------------------------------
 
-    print("    Looking for caption field...")
+    print(
+        "    Looking for caption field..."
+    )
 
     caption_box = page.locator(
         '[data-testid="media-caption-input-container"]'
@@ -236,48 +406,72 @@ def send_whatsapp_message(
         timeout=10000,
     )
 
-    print("    Caption field found.")
+    print(
+        "    Caption field found."
+    )
 
     # --------------------------------------------------------
     # STEP 6: Enter caption
     # --------------------------------------------------------
 
-    print("    Entering caption...")
+    print(
+        "    Entering caption..."
+    )
 
-    caption_box.fill(message)
+    caption_box.fill(
+        message
+    )
 
-    print("    Caption entered.")
+    print(
+        "    Caption entered."
+    )
 
-    # Give WhatsApp time to update the media preview
-    page.wait_for_timeout(1000)
+    page.wait_for_timeout(
+        1000
+    )
 
     # --------------------------------------------------------
-    # STEP 7: Send image + caption
+    # STEP 7: Send
     # --------------------------------------------------------
 
-    print("    Sending image + caption...")
+    print(
+        "    Sending image + caption..."
+    )
 
-    send_media.click(force=True)
+    send_media.click(
+        force=True
+    )
 
-    print("    Send button clicked.")
+    print(
+        "    Send button clicked."
+    )
 
-    # Give WhatsApp time to finish sending
-    page.wait_for_timeout(3000)
+    # Give WhatsApp time to process
+    page.wait_for_timeout(
+        3000
+    )
 
-    # The media editor should disappear after a successful send.
+    # --------------------------------------------------------
+    # Verify editor disappeared
+    # --------------------------------------------------------
+
     try:
+
         send_media.wait_for(
             state="hidden",
             timeout=10000,
         )
 
-        print("    ✓ Media editor closed.")
-        print("    ✓ Message sent.")
-
     except Exception:
+
         raise RuntimeError(
-            "Media editor did not close after sending."
+            "Media editor did not close after "
+            "the send action."
         )
+
+    print(
+        "    ✓ Message sent."
+    )
 
 
 # ============================================================
@@ -285,19 +479,23 @@ def send_whatsapp_message(
 # ============================================================
 
 def broadcast_message(
-    message: str,
-    image_path: str,
-    contacts: list[str],
-) -> list[dict]:
-    """Send the same image + caption to every contact."""
+    campaign: dict,
+) -> dict:
+    """Run a campaign and update its log after every recipient."""
 
-    results = []
+    image_path = campaign["image"]
+    message = campaign["message"]
+
+    contacts = list(
+        campaign["contacts"].keys()
+    )
 
     with sync_playwright() as p:
 
-        print("\nStarting WhatsApp browser...")
+        print(
+            "\nStarting WhatsApp browser..."
+        )
 
-        # Use persistent profile so WhatsApp login is remembered
         context = p.chromium.launch_persistent_context(
             user_data_dir=PROFILE_DIR,
             headless=False,
@@ -310,10 +508,12 @@ def broadcast_message(
             else context.new_page()
         )
 
-        print("WhatsApp browser ready.")
+        print(
+            "WhatsApp browser ready."
+        )
 
         # ----------------------------------------------------
-        # Send to every contact
+        # Process contacts
         # ----------------------------------------------------
 
         for i, phone in enumerate(
@@ -321,9 +521,32 @@ def broadcast_message(
             start=1,
         ):
 
+            recipient = campaign[
+                "contacts"
+            ][phone]
+
+            # Skip recipients already sent
+            if recipient["status"] == "sent":
+
+                print(
+                    f"\n[{i}/{len(contacts)}] "
+                    f"{phone} → already sent, skipping."
+                )
+
+                continue
+
             print(
                 f"\n[{i}/{len(contacts)}] "
                 f"Sending to {phone}..."
+            )
+
+            # Mark attempt before sending
+            recipient["attempts"] += 1
+
+            recipient["last_attempt"] = timestamp()
+
+            save_campaign(
+                campaign
             )
 
             try:
@@ -335,24 +558,39 @@ def broadcast_message(
                     image_path=image_path,
                 )
 
-                results.append({
-                    "phone": phone,
-                    "status": "sent",
-                })
+                # Mark sent only after the sender
+                # confirms the media editor closed.
+                update_recipient(
+                    campaign=campaign,
+                    phone=phone,
+                    status="sent",
+                )
+
+                print(
+                    f"    ✓ Recorded as SENT."
+                )
 
             except Exception as e:
 
-                print(f"    ✗ Failed -> {phone}")
-                print(f"      Error: {e}")
+                error_message = str(e)
 
-                results.append({
-                    "phone": phone,
-                    "status": "failed",
-                    "error": str(e),
-                })
+                print(
+                    f"    ✗ Failed -> {phone}"
+                )
+
+                print(
+                    f"      Error: {error_message}"
+                )
+
+                update_recipient(
+                    campaign=campaign,
+                    phone=phone,
+                    status="failed",
+                    error=error_message,
+                )
 
             # ------------------------------------------------
-            # Delay before next recipient
+            # Delay
             # ------------------------------------------------
 
             if i < len(contacts):
@@ -366,13 +604,13 @@ def broadcast_message(
                     DELAY_BETWEEN_SENDS
                 )
 
-        # ----------------------------------------------------
-        # Close browser
-        # ----------------------------------------------------
-
         context.close()
 
-    return results
+    finish_campaign(
+        campaign
+    )
+
+    return campaign
 
 
 # ============================================================
@@ -382,9 +620,17 @@ def broadcast_message(
 def run_broadcast() -> None:
     """Run the complete photo + text broadcast workflow."""
 
-    print("\n===================================")
-    print("      WhatsApp Broadcast Agent")
-    print("===================================\n")
+    print(
+        "\n==================================="
+    )
+
+    print(
+        "      WhatsApp Broadcast Agent"
+    )
+
+    print(
+        "===================================\n"
+    )
 
     # --------------------------------------------------------
     # Load contacts
@@ -423,7 +669,9 @@ def run_broadcast() -> None:
         "you want to send: "
     ).strip()
 
-    if not os.path.isfile(image_path):
+    if not os.path.isfile(
+        image_path
+    ):
 
         print(
             f"Image not found: {image_path}"
@@ -436,7 +684,7 @@ def run_broadcast() -> None:
     )
 
     # --------------------------------------------------------
-    # Get message / caption
+    # Get message
     # --------------------------------------------------------
 
     print(
@@ -448,7 +696,9 @@ def run_broadcast() -> None:
         "Type your message and press ENTER.\n"
     )
 
-    message = input("> ").strip()
+    message = input(
+        "> "
+    ).strip()
 
     if not message:
 
@@ -462,24 +712,45 @@ def run_broadcast() -> None:
     # Preview
     # --------------------------------------------------------
 
-    print("\n===================================")
-    print("        BROADCAST PREVIEW")
-    print("===================================\n")
+    print(
+        "\n==================================="
+    )
+
+    print(
+        "        BROADCAST PREVIEW"
+    )
+
+    print(
+        "===================================\n"
+    )
 
     print(
         f"Image: {image_path}"
     )
 
-    print("\nCaption:")
-    print("-----------------------------------")
-    print(message)
-    print("-----------------------------------")
+    print(
+        "\nCaption:"
+    )
+
+    print(
+        "-----------------------------------"
+    )
+
+    print(
+        message
+    )
+
+    print(
+        "-----------------------------------"
+    )
 
     print(
         f"\nRecipients: {len(contacts)}"
     )
 
-    print("===================================\n")
+    print(
+        "===================================\n"
+    )
 
     # --------------------------------------------------------
     # Confirmation
@@ -499,73 +770,92 @@ def run_broadcast() -> None:
         return
 
     # --------------------------------------------------------
-    # Start broadcast
+    # Create campaign
     # --------------------------------------------------------
 
-    print("\nBroadcast starting...")
-
-    print(
-        "Keep WhatsApp Web/browser visible."
+    campaign = create_campaign(
+        image_path=image_path,
+        message=message,
+        contacts=contacts,
     )
 
-    print()
+    print(
+        "\nCampaign created:"
+    )
 
-    results = broadcast_message(
-        message=message,
-        image_path=image_path,
-        contacts=contacts,
+    print(
+        f"  ID: {campaign['campaign_id']}"
+    )
+
+    print(
+        f"  Log: {get_campaign_path(campaign)}"
+    )
+
+    print(
+        "\nBroadcast starting..."
+    )
+
+    print(
+        "Keep WhatsApp Web/browser visible.\n"
+    )
+
+    # --------------------------------------------------------
+    # Run campaign
+    # --------------------------------------------------------
+
+    campaign = broadcast_message(
+        campaign
     )
 
     # --------------------------------------------------------
     # Summary
     # --------------------------------------------------------
 
-    sent = sum(
-        1
-        for result in results
-        if result["status"] == "sent"
-    )
-
-    failed = sum(
-        1
-        for result in results
-        if result["status"] == "failed"
-    )
-
-    print("\n===================================")
-    print("         BROADCAST COMPLETE")
-    print("===================================")
+    summary = campaign[
+        "summary"
+    ]
 
     print(
-        f"Total:   {len(results)}"
+        "\n==================================="
     )
 
     print(
-        f"Sent:    {sent}"
+        "         BROADCAST COMPLETE"
     )
 
     print(
-        f"Failed:  {failed}"
+        "==================================="
     )
 
-    print("===================================\n")
+    print(
+        f"Total:     {campaign['total_contacts']}"
+    )
 
-    # Show failures
-    if failed:
+    print(
+        f"Sent:      {summary['sent']}"
+    )
 
-        print("Failed numbers:")
+    print(
+        f"Failed:    {summary['failed']}"
+    )
 
-        for result in results:
+    print(
+        f"Pending:   {summary['pending']}"
+    )
 
-            if result["status"] == "failed":
+    print(
+        "==================================="
+    )
 
-                print(
-                    f"  - {result['phone']}"
-                )
+    print(
+        f"\nLog saved to:"
+    )
 
-                print(
-                    f"    {result['error']}"
-                )
+    print(
+        get_campaign_path(campaign)
+    )
+
+    print()
 
 
 # ============================================================
