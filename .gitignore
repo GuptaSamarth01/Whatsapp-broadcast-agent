@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+
+# WhatsApp session
+whatsapp_profile/
+
+# Personal contacts
+contacts.json
+
+# Campaign media
+*.jpeg
+*.jpg
+*.png
+*.webp
+
+# Logs
+logs/
+
+# PyWhatKit leftovers
+PyWhatKit_DB.txt
+
+# Environment/secrets
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
