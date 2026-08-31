@@ -12,6 +12,9 @@ whatsapp_profile/
 
 # Personal contacts
 contacts.json
+# Contact files
+contacts*.json
+*.xlsx
 
 # Campaign media
 *.jpeg
