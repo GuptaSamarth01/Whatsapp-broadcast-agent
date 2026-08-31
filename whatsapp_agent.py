@@ -1058,25 +1058,28 @@ def run_broadcast() -> None:
     # Get message
     # --------------------------------------------------------
 
-    print(
-        "\nEnter the message/caption "
-        "you want to send."
-    )
+    print("\nEnter the message/caption you want to send.")
+    print("Paste your complete message below.")
+    print("When finished, type END on a new line.")
+    print("The word END will not be included in the message.\n")
 
-    print(
-        "Type your message and press ENTER.\n"
-    )
+    message_lines = []
 
-    message = input(
-        "> "
-    ).strip()
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+
+        if line == "END":
+            break
+
+        message_lines.append(line)
+
+    message = "\n".join(message_lines).strip()
 
     if not message:
-
-        print(
-            "Message cannot be empty."
-        )
-
+        print("Message cannot be empty.")
         return
 
     # --------------------------------------------------------
